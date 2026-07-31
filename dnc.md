@@ -146,8 +146,10 @@ exports.main = async (event, callback) => {
     const phoneRaw = input.phone || input.mobilephone;
     let cleanPhone = null;
     if (phoneRaw) {
-      cleanPhone = String(phoneRaw).replace(/\D/g, '');
-      if (cleanPhone.length === 11 && cleanPhone.startsWith('1')) cleanPhone = cleanPhone.slice(1);
+      let digits = String(phoneRaw).replace(/\D/g, '');
+      if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+      cleanPhone = digits.length === 10 ? digits : null;
+      if (!cleanPhone) console.warn(`⚠️ Phone '${phoneRaw}' did not resolve to 10 digits; skipping DNC lookup but will still PATCH HubSpot.`);
     } else {
       console.warn('⚠️ Phone missing; skipping DNC lookup but will still PATCH HubSpot.');
     }
