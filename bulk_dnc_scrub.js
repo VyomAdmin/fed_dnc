@@ -9,6 +9,7 @@ const HAS_DNC_CREDS = Boolean(DNC_OAUTH_CLIENT_ID && DNC_OAUTH_CLIENT_SECRET && 
 
 const DAILY_LIMIT = Number(process.env.BULK_DAILY_LIMIT || 11000); // ~300k / 28-day rotation
 const STALE_DAYS = Number(process.env.BULK_STALE_DAYS || 28);
+const TEST_CONTACT_ID = process.env.TEST_CONTACT_ID || null;
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -156,6 +157,13 @@ async function searchContacts(filterGroups, sorts, limitRemaining) {
   return results;
 }
 
+async function fetchSingleContact(contactId) {
+  const url = `https://api.hubapi.com/crm/v3/objects/contacts/${encodeURIComponent(contactId)}?properties=${CONTACT_PROPERTIES.join(',')}`;
+  const { ok, json } = await requestWithRetry(url, { method: 'GET', headers: hsHeaders() });
+  if (!ok || !json) return [];
+  return [json];
+}
+
 async function fetchCandidates() {
   const cutoff = new Date();
   cutoff.setUTCHours(0, 0, 0, 0);
@@ -289,9 +297,13 @@ async function main() {
   if (!HAS_DNC_CREDS) console.warn('⚠️ Missing DNC_OAUTH_CLIENT_ID/SECRET/SCOPE; DNC/EBR/litigator/reassignment checks will be skipped for this run.');
 
   const todayIso = new Date().toISOString().slice(0, 10);
-  console.log(`🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
+  console.log(TEST_CONTACT_ID
+    ? `🟢 DNC scrub start — TEST MODE, single contact ${TEST_CONTACT_ID}`
+    : `🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
 
-  const candidates = await fetchCandidates();
+  const candidates = TEST_CONTACT_ID
+    ? await fetchSingleContact(TEST_CONTACT_ID)
+    : await fetchCandidates();
   console.log(`[Main] total candidates: ${candidates.length}`);
   if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
 
