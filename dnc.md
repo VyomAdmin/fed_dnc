@@ -123,6 +123,41 @@ async function quickcheckRequestWithRetry(token, body, tries = 6, base = 500) {
 // to reassigned_api_log but leave phone_reassigned unset rather than guess.
 const RND_STATUS_MAP = { RNN: false, RNY: true };
 
+const DEAL_PROPERTIES = ['install_completed_date__c', 'status_code__c', 'closedate', 'hs_lastmodifieddate'];
+
+/** install_completed_date__c and status_code__c live on the Deal, not the Contact —
+ *  look up the contact's associated deals and use the most recently closed/updated one. */
+async function fetchPrimaryDeal(contactId, hubspotToken) {
+  const assocUrl = `https://api.hubapi.com/crm/v4/objects/contacts/${encodeURIComponent(contactId)}/associations/deals`;
+  const assocRes = await fetchWithRetry(assocUrl, { method: 'GET', headers: { 'Authorization': `Bearer ${hubspotToken}` } });
+  const assocTxt = await assocRes.text();
+  if (!assocRes.ok) { console.warn(`[Deals] association lookup failed status=${assocRes.status}`); return null; }
+
+  let dealIds = [];
+  try { dealIds = (JSON.parse(assocTxt).results || []).map((r) => r.toObjectId); } catch { /* leave empty */ }
+  if (dealIds.length === 0) { console.warn(`[Deals] no associated deals for contact ${contactId}`); return null; }
+
+  const dealsRes = await fetchWithRetry('https://api.hubapi.com/crm/v3/objects/deals/batch/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${hubspotToken}` },
+    body: JSON.stringify({ properties: DEAL_PROPERTIES, inputs: dealIds.map((id) => ({ id })) }),
+  });
+  const dealsTxt = await dealsRes.text();
+  if (!dealsRes.ok) { console.warn(`[Deals] batch read failed status=${dealsRes.status}`); return null; }
+
+  let deals = [];
+  try { deals = JSON.parse(dealsTxt).results || []; } catch { return null; }
+  if (deals.length === 0) return null;
+
+  deals.sort((a, b) => {
+    const aKey = hsToDate(a.properties.closedate) || hsToDate(a.properties.hs_lastmodifieddate) || new Date(0);
+    const bKey = hsToDate(b.properties.closedate) || hsToDate(b.properties.hs_lastmodifieddate) || new Date(0);
+    return bKey - aKey;
+  });
+  console.log(`[Deals] ${deals.length} associated deal(s), using most recently closed/updated: ${deals[0].id}`);
+  return deals[0].properties;
+}
+
 // ---------- HubSpot Custom Code entry ----------
 exports.main = async (event, callback) => {
   try {
@@ -158,15 +193,20 @@ exports.main = async (event, callback) => {
     const now = new Date();
     const todayIso = now.toISOString().slice(0, 10); // YYYY-MM-DD
 
+    // install_completed_date__c / status_code__c live on the Deal — pull from the primary associated deal
+    const primaryDeal = await fetchPrimaryDeal(contactId, HUBSPOT_TOKEN);
+    const rawInstallCompleted = primaryDeal?.install_completed_date__c || null;
+    const statusCodeRaw       = primaryDeal?.status_code__c || null;
+    const isInstallCompleted = String(statusCodeRaw || '').trim().toLowerCase() === 'install completed';
+
     // Inputs used for rules
     const rawLatestDealCreated = input.latest_deal_created_date;
     const rawContactCreated    = input.createdate;
     const rawLastContact       = input.recent_deal_close_date;
-    const rawInstallCompleted  = input.install_completed_date__c;
     const pewcRaw              = input.pewc__c;
     const isPewc = pewcRaw === true || String(pewcRaw).trim().toLowerCase() === 'true';
 
-    console.log(`[HubSpot] install_completed_date__c='${rawInstallCompleted}', pewc__c='${pewcRaw}' (isPewc=${isPewc})`);
+    console.log(`[HubSpot] install_completed_date__c='${rawInstallCompleted}', status_code__c='${statusCodeRaw}', pewc__c='${pewcRaw}' (isPewc=${isPewc})`);
 
     // --- Build properties to update (always stamp scrub date) ---
     const updateProps = {};
@@ -183,13 +223,17 @@ exports.main = async (event, callback) => {
         hsToDate(rawContactCreated);
       const consentDateSlash = consentDate ? toMMDDYYYYSlash(consentDate) : null;
 
+      console.log(isInstallCompleted
+        ? `[QuickCheck] status_code__c='Install Completed' ⇒ EBR check (consentDate=${consentDateSlash || 'none'})`
+        : `[QuickCheck] status_code__c='${statusCodeRaw}' ⇒ regular DNC check (no EBR/RND date sent)`);
+
       const token = await fetchDncOAuthToken(DNC_OAUTH_CLIENT_ID, DNC_OAUTH_CLIENT_SECRET, DNC_OAUTH_SCOPE);
 
       if (!token) {
         updateProps.dnc_api_log = 'OAUTH_TOKEN_FETCH_FAILED';
       } else {
         const qcEntry = { PhoneNumber: cleanPhone };
-        if (consentDateSlash) {
+        if (isInstallCompleted && consentDateSlash) {
           qcEntry.LastEBRDate = consentDateSlash;
           qcEntry.LastRNDDate = consentDateSlash;
         }

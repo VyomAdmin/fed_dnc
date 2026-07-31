@@ -13,6 +13,8 @@ const TEST_CONTACT_ID = process.env.TEST_CONTACT_ID || null;
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
+const HS_ASSOC_BATCH_URL = 'https://api.hubapi.com/crm/v3/associations/contacts/deals/batch/read';
+const HS_DEALS_BATCH_READ_URL = 'https://api.hubapi.com/crm/v3/objects/deals/batch/read';
 const DNC_OAUTH_TOKEN_URL = 'https://oauth.dncsolution.com/oauth2/v1/token';
 const QUICKCHECK_CLIENT_ID = '18856';
 const QUICKCHECK_AUTH_PROFILE_ID = '1524';
@@ -21,9 +23,11 @@ const QUICKCHECK_CHUNK_SIZE = 500; // v4 QuickCheck POST max per call
 
 const CONTACT_PROPERTIES = [
   'phone', 'mobilephone', 'dnc_scrubbed_on__c',
-  'install_completed_date__c', 'pewc__c',
-  'createdate', 'latest_deal_created_date', 'recent_deal_close_date',
+  'pewc__c', 'createdate', 'latest_deal_created_date', 'recent_deal_close_date',
 ];
+
+// install_completed_date__c / status_code__c live on the Deal, not the Contact
+const DEAL_PROPERTIES = ['install_completed_date__c', 'status_code__c', 'closedate', 'hs_lastmodifieddate'];
 
 // RNDStatus code → meaning (confirmed with vendor). Unmapped/unknown codes are logged
 // to dnc_api_log but leave phone_reassigned unset rather than guess.
@@ -164,6 +168,48 @@ async function fetchSingleContact(contactId) {
   return [json];
 }
 
+// ---------- associated deals (install_completed_date__c / status_code__c live here, not on the Contact) ----------
+async function fetchAssociatedDealIdsBulk(contactIds) {
+  const map = new Map(); // contactId -> [dealId, ...]
+  for (const chunk of chunkArray(contactIds, 100)) {
+    const body = { inputs: chunk.map((id) => ({ id })) };
+    const { ok, json } = await requestWithRetry(HS_ASSOC_BATCH_URL, { method: 'POST', headers: hsHeaders(), body: JSON.stringify(body) });
+    if (ok && Array.isArray(json?.results)) {
+      for (const r of json.results) map.set(String(r.from.id), (r.to || []).map((t) => t.toObjectId || t.id));
+    } else {
+      console.warn(`[Deals] association batch failed for chunk of ${chunk.length}`);
+    }
+    await delay(150);
+  }
+  return map;
+}
+
+async function fetchDealsBulk(dealIds) {
+  const map = new Map(); // dealId -> properties
+  const uniqueIds = [...new Set(dealIds)];
+  for (const chunk of chunkArray(uniqueIds, 100)) {
+    const body = { properties: DEAL_PROPERTIES, inputs: chunk.map((id) => ({ id })) };
+    const { ok, json } = await requestWithRetry(HS_DEALS_BATCH_READ_URL, { method: 'POST', headers: hsHeaders(), body: JSON.stringify(body) });
+    if (ok && Array.isArray(json?.results)) {
+      for (const d of json.results) map.set(String(d.id), d.properties);
+    } else {
+      console.warn(`[Deals] batch read failed for chunk of ${chunk.length}`);
+    }
+    await delay(150);
+  }
+  return map;
+}
+
+/** Pick the most recently closed/updated deal's properties from a contact's associated deals. */
+function pickPrimaryDealProps(dealsProps) {
+  if (!dealsProps || dealsProps.length === 0) return null;
+  return dealsProps.slice().sort((a, b) => {
+    const aKey = hsToDate(a.closedate) || hsToDate(a.hs_lastmodifieddate) || new Date(0);
+    const bKey = hsToDate(b.closedate) || hsToDate(b.hs_lastmodifieddate) || new Date(0);
+    return bKey - aKey;
+  })[0];
+}
+
 async function fetchCandidates() {
   const cutoff = new Date();
   cutoff.setUTCHours(0, 0, 0, 0);
@@ -202,7 +248,7 @@ async function runQuickCheckChunks(contacts) {
 
     const body = chunk.map((c) => {
       const entry = { PhoneNumber: c.cleanPhone };
-      if (c.consentDate) {
+      if (c.isInstallCompleted && c.consentDate) {
         const d = toMMDDYYYYSlash(c.consentDate);
         entry.LastEBRDate = d;
         entry.LastRNDDate = d;
@@ -238,7 +284,7 @@ function deriveProps(contact, resultsByPhone, todayIso) {
 
   const pewcRaw = contact.properties.pewc__c;
   const isPewc = pewcRaw === true || String(pewcRaw).trim().toLowerCase() === 'true';
-  const installDt = hsToDate(contact.properties.install_completed_date__c);
+  const installDt = hsToDate(contact.dealInstallCompletedDate);
   const filters = Array.isArray(result.Filters) ? result.Filters : [];
 
   // --- Litigator ---
@@ -307,14 +353,25 @@ async function main() {
   console.log(`[Main] total candidates: ${candidates.length}`);
   if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
 
+  console.log(`[Deals] looking up associated deals for ${candidates.length} contacts`);
+  const assocMap = await fetchAssociatedDealIdsBulk(candidates.map((c) => c.id));
+  const dealPropsMap = await fetchDealsBulk([...assocMap.values()].flat());
+  console.log(`[Deals] resolved ${dealPropsMap.size} unique deal(s)`);
+
   const contacts = candidates.map((c) => {
     const cleanPhone = cleanPhoneOf(c.properties.phone, c.properties.mobilephone);
+    const dealIds = assocMap.get(String(c.id)) || [];
+    const primaryDeal = pickPrimaryDealProps(dealIds.map((id) => dealPropsMap.get(String(id))).filter(Boolean));
+    const dealInstallCompletedDate = primaryDeal?.install_completed_date__c || null;
+    const dealStatusCode = primaryDeal?.status_code__c || null;
+
     const consentDate =
-      hsToDate(c.properties.install_completed_date__c) ||
+      hsToDate(dealInstallCompletedDate) ||
       hsToDate(c.properties.recent_deal_close_date) ||
       hsToDate(c.properties.latest_deal_created_date) ||
       hsToDate(c.properties.createdate);
-    return { id: c.id, properties: c.properties, cleanPhone, consentDate };
+    const isInstallCompleted = String(dealStatusCode || '').trim().toLowerCase() === 'install completed';
+    return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate };
   });
 
   const withPhone = contacts.filter((c) => c.cleanPhone);
