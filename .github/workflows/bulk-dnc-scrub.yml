@@ -1,0 +1,23 @@
+name: Bulk DNC Scrub
+
+on:
+  schedule:
+    - cron: '0 10 * * *' # 10:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  scrub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run bulk scrub
+        env:
+          HUBSPOT_PRIVATE_APP_TOKEN: ${{ secrets.HUBSPOT_PRIVATE_APP_TOKEN }}
+          DNC_OAUTH_CLIENT_ID: ${{ secrets.DNC_OAUTH_CLIENT_ID }}
+          DNC_OAUTH_CLIENT_SECRET: ${{ secrets.DNC_OAUTH_CLIENT_SECRET }}
+          DNC_OAUTH_SCOPE: ${{ secrets.DNC_OAUTH_SCOPE }}
+        run: node bulk_dnc_scrub.js

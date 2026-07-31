@@ -1,0 +1,10 @@
+{
+  "name": "dnc-scrub",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "bulk-scrub": "node bulk_dnc_scrub.js"
+  }
+}
