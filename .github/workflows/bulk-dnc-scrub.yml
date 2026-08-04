@@ -9,6 +9,10 @@ on:
         description: 'HubSpot contact ID to scrub in isolation (leave blank for normal bulk run)'
         required: false
         type: string
+      list_id:
+        description: 'HubSpot active list ID to scrub (leave blank for normal bulk run)'
+        required: false
+        type: string
 
 jobs:
   scrub:
@@ -26,4 +30,5 @@ jobs:
           DNC_OAUTH_CLIENT_SECRET: ${{ secrets.DNC_OAUTH_CLIENT_SECRET }}
           DNC_OAUTH_SCOPE: ${{ secrets.DNC_OAUTH_SCOPE }}
           TEST_CONTACT_ID: ${{ github.event.inputs.test_contact_id }}
+          HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
         run: node bulk_dnc_scrub.js

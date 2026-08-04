@@ -10,11 +10,14 @@ const HAS_DNC_CREDS = Boolean(DNC_OAUTH_CLIENT_ID && DNC_OAUTH_CLIENT_SECRET && 
 const DAILY_LIMIT = Number(process.env.BULK_DAILY_LIMIT || 11000); // ~300k / 28-day rotation
 const STALE_DAYS = Number(process.env.BULK_STALE_DAYS || 28);
 const TEST_CONTACT_ID = process.env.TEST_CONTACT_ID || null;
+const LIST_ID = process.env.HUBSPOT_LIST_ID || null;
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
+const HS_BATCH_READ_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/read';
 const HS_ASSOC_BATCH_URL = 'https://api.hubapi.com/crm/v3/associations/contacts/deals/batch/read';
 const HS_DEALS_BATCH_READ_URL = 'https://api.hubapi.com/crm/v3/objects/deals/batch/read';
+const HS_LIST_MEMBERSHIPS_URL = (listId) => `https://api.hubapi.com/crm/v3/lists/${encodeURIComponent(listId)}/memberships`;
 const DNC_OAUTH_TOKEN_URL = 'https://oauth.dncsolution.com/oauth2/v1/token';
 const QUICKCHECK_CLIENT_ID = '18856';
 const QUICKCHECK_AUTH_PROFILE_ID = '1524';
@@ -168,6 +171,43 @@ async function fetchSingleContact(contactId) {
   return [json];
 }
 
+// ---------- HubSpot active list membership (scrub a specific segment) ----------
+async function fetchListMemberIds(listId) {
+  const ids = [];
+  let after;
+  for (;;) {
+    const url = new URL(HS_LIST_MEMBERSHIPS_URL(listId));
+    url.searchParams.set('limit', '250');
+    if (after) url.searchParams.set('after', after);
+    const { ok, json } = await requestWithRetry(url.toString(), { method: 'GET', headers: hsHeaders() });
+    if (!ok || !json) { console.error('[List] membership fetch failed, stopping pagination'); break; }
+    ids.push(...(json.results || []).map((r) => String(r.recordId)));
+    after = json.paging?.next?.after;
+    if (!after) break;
+  }
+  return ids;
+}
+
+async function fetchContactsByIds(contactIds) {
+  const results = [];
+  for (const chunk of chunkArray(contactIds, 100)) {
+    const body = { properties: CONTACT_PROPERTIES, inputs: chunk.map((id) => ({ id })) };
+    const { ok, json } = await requestWithRetry(HS_BATCH_READ_URL, { method: 'POST', headers: hsHeaders(), body: JSON.stringify(body) });
+    if (ok && Array.isArray(json?.results)) results.push(...json.results);
+    else console.warn(`[List] contact batch read failed for chunk of ${chunk.length}`);
+    await delay(150);
+  }
+  return results;
+}
+
+async function fetchListCandidates(listId) {
+  console.log(`[Candidates] list mode — listId=${listId}`);
+  const memberIds = await fetchListMemberIds(listId);
+  console.log(`[Candidates] list members: ${memberIds.length}`);
+  if (memberIds.length === 0) return [];
+  return fetchContactsByIds(memberIds);
+}
+
 // ---------- associated deals (install_completed_date__c / status_code__c live here, not on the Contact) ----------
 async function fetchAssociatedDealIdsBulk(contactIds) {
   const map = new Map(); // contactId -> [dealId, ...]
@@ -275,7 +315,7 @@ async function runQuickCheckChunks(contacts) {
 // ---------- per-contact property derivation ----------
 function deriveProps(contact, resultsByPhone, todayIso) {
   const props = { dnc_scrubbed_on__c: todayIso };
-  if (!contact.cleanPhone) return props;
+  if (!contact.cleanPhone) { props.dnc_api_log = 'NO_PHONE'; return props; }
 
   if (!HAS_DNC_CREDS) { props.dnc_api_log = 'SKIPPED_NO_OAUTH_CREDS'; return props; }
 
@@ -345,10 +385,14 @@ async function main() {
   const todayIso = new Date().toISOString().slice(0, 10);
   console.log(TEST_CONTACT_ID
     ? `🟢 DNC scrub start — TEST MODE, single contact ${TEST_CONTACT_ID}`
+    : LIST_ID
+    ? `🟢 DNC scrub start — LIST MODE, listId=${LIST_ID}`
     : `🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
 
   const candidates = TEST_CONTACT_ID
     ? await fetchSingleContact(TEST_CONTACT_ID)
+    : LIST_ID
+    ? await fetchListCandidates(LIST_ID)
     : await fetchCandidates();
   console.log(`[Main] total candidates: ${candidates.length}`);
   if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
