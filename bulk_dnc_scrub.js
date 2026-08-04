@@ -303,7 +303,6 @@ async function runQuickCheckChunks(contacts) {
     });
 
     if (ok && Array.isArray(json?.QuickCheckResults)) {
-      if (process.env.DEBUG_LOG_QUICKCHECK_RESPONSE) console.log(`[QuickCheck] raw response: ${JSON.stringify(json)}`);
       for (const row of json.QuickCheckResults) byPhone.set(String(row.PhoneNumber), row);
     } else {
       console.warn(`[QuickCheck] chunk of ${chunk.length} failed after retries`);

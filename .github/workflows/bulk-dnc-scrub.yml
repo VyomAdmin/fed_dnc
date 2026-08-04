@@ -13,11 +13,6 @@ on:
         description: 'HubSpot active list ID to scrub (leave blank for normal bulk run)'
         required: false
         type: string
-      debug_log_quickcheck_response:
-        description: 'Log raw DNC QuickCheck API response (debug only)'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   scrub:
@@ -36,5 +31,4 @@ jobs:
           DNC_OAUTH_SCOPE: ${{ secrets.DNC_OAUTH_SCOPE }}
           TEST_CONTACT_ID: ${{ github.event.inputs.test_contact_id }}
           HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
-          DEBUG_LOG_QUICKCHECK_RESPONSE: ${{ github.event.inputs.debug_log_quickcheck_response }}
         run: node bulk_dnc_scrub.js
