@@ -314,14 +314,17 @@ async function runQuickCheckChunks(contacts) {
 
 // ---------- per-contact property derivation ----------
 function deriveProps(contact, resultsByPhone, todayIso) {
-  const props = { dnc_scrubbed_on__c: todayIso };
-  if (!contact.cleanPhone) { props.dnc_api_log = 'NO_PHONE'; return props; }
+  // dnc_scrubbed_on__c must only be stamped once a check actually happened (or there's
+  // nothing to check). Stamping it on RETRY/SKIPPED_NO_OAUTH_CREDS would hide the failure
+  // and skip this contact from re-scrub for STALE_DAYS while it was never really checked.
+  if (!contact.cleanPhone) return { dnc_scrubbed_on__c: todayIso, dnc_api_log: 'NO_PHONE' };
 
-  if (!HAS_DNC_CREDS) { props.dnc_api_log = 'SKIPPED_NO_OAUTH_CREDS'; return props; }
+  if (!HAS_DNC_CREDS) return { dnc_api_log: 'SKIPPED_NO_OAUTH_CREDS' };
 
   const result = resultsByPhone.get(contact.cleanPhone);
-  if (!result) { props.dnc_api_log = 'RETRY'; return props; }
+  if (!result) return { dnc_api_log: 'RETRY' };
 
+  const props = { dnc_scrubbed_on__c: todayIso };
   const pewcRaw = contact.properties.pewc__c;
   const isPewc = pewcRaw === true || String(pewcRaw).trim().toLowerCase() === 'true';
   const installDt = hsToDate(contact.dealInstallCompletedDate);
