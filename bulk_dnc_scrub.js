@@ -290,10 +290,12 @@ async function runQuickCheckChunks(contacts) {
 
     const body = chunk.map((c) => {
       const entry = { PhoneNumber: c.cleanPhone };
-      if (c.isInstallCompleted && c.consentDate) {
-        const d = toMMDDYYYYSlash(c.consentDate);
-        entry.LastEBRDate = d;
-        entry.LastRNDDate = d;
+      // LastRNDDate (reassignment check) applies regardless of install status — reassignment
+      // risk exists whether or not the deal has closed. LastEBRDate (EBR exemption) stays
+      // gated on isInstallCompleted since that exemption legitimately requires it.
+      if (c.consentDate) {
+        entry.LastRNDDate = toMMDDYYYYSlash(c.consentDate);
+        if (c.isInstallCompleted) entry.LastEBRDate = entry.LastRNDDate;
       }
       return entry;
     });

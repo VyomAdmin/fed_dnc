@@ -224,8 +224,8 @@ exports.main = async (event, callback) => {
       const consentDateSlash = consentDate ? toMMDDYYYYSlash(consentDate) : null;
 
       console.log(isInstallCompleted
-        ? `[QuickCheck] status_code__c='Install Completed' ⇒ EBR check (consentDate=${consentDateSlash || 'none'})`
-        : `[QuickCheck] status_code__c='${statusCodeRaw}' ⇒ regular DNC check (no EBR/RND date sent)`);
+        ? `[QuickCheck] status_code__c='Install Completed' ⇒ EBR + RND check (consentDate=${consentDateSlash || 'none'})`
+        : `[QuickCheck] status_code__c='${statusCodeRaw}' ⇒ RND check only, no EBR (consentDate=${consentDateSlash || 'none'})`);
 
       const token = await fetchDncOAuthToken(DNC_OAUTH_CLIENT_ID, DNC_OAUTH_CLIENT_SECRET, DNC_OAUTH_SCOPE);
 
@@ -233,9 +233,12 @@ exports.main = async (event, callback) => {
         updateProps.dnc_api_log = 'OAUTH_TOKEN_FETCH_FAILED';
       } else {
         const qcEntry = { PhoneNumber: cleanPhone };
-        if (isInstallCompleted && consentDateSlash) {
-          qcEntry.LastEBRDate = consentDateSlash;
+        // LastRNDDate (reassignment check) applies regardless of install status — reassignment
+        // risk exists whether or not the deal has closed. LastEBRDate (EBR exemption) stays
+        // gated on isInstallCompleted since that exemption legitimately requires it.
+        if (consentDateSlash) {
           qcEntry.LastRNDDate = consentDateSlash;
+          if (isInstallCompleted) qcEntry.LastEBRDate = consentDateSlash;
         }
 
         const { ok, json, raw } = await quickcheckRequestWithRetry(token, [qcEntry]);
