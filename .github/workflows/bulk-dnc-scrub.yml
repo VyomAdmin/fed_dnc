@@ -13,6 +13,15 @@ on:
         description: 'HubSpot active list ID to scrub (leave blank for normal bulk run)'
         required: false
         type: string
+      sample_limit:
+        description: 'Cap the number of candidates processed (e.g. 5 for a sample check)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Print detailed per-contact results without writing anything to HubSpot'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   scrub:
@@ -31,4 +40,6 @@ jobs:
           DNC_OAUTH_SCOPE: ${{ secrets.DNC_OAUTH_SCOPE }}
           TEST_CONTACT_ID: ${{ github.event.inputs.test_contact_id }}
           HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: node bulk_dnc_scrub.js

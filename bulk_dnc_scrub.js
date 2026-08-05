@@ -11,6 +11,8 @@ const DAILY_LIMIT = Number(process.env.BULK_DAILY_LIMIT || 11000); // ~300k / 28
 const STALE_DAYS = Number(process.env.BULK_STALE_DAYS || 28);
 const TEST_CONTACT_ID = process.env.TEST_CONTACT_ID || null;
 const LIST_ID = process.env.HUBSPOT_LIST_ID || null;
+const DRY_RUN = String(process.env.DRY_RUN || '').trim().toLowerCase() === 'true';
+const SAMPLE_LIMIT = Number(process.env.SAMPLE_LIMIT || 0) || null;
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -351,17 +353,21 @@ function deriveProps(contact, resultsByPhone, todayIso) {
 
   // --- Reassignment ---
   let reassignedFlag = null;
+  let reassignedUnknown = false;
   const rndStatus = result.RNDStatus;
   if (rndStatus != null) {
     if (Object.prototype.hasOwnProperty.call(RND_STATUS_MAP, rndStatus)) {
       reassignedFlag = RND_STATUS_MAP[rndStatus];
       props.phone_reassigned = reassignedFlag ? 'Yes' : 'No';
     } else {
-      console.warn(`[Reassigned] Unmapped RNDStatus='${rndStatus}' for contact ${contact.id} — leaving phone_reassigned unset`);
+      reassignedUnknown = true;
+      console.warn(`[Reassigned] Unmapped RNDStatus='${rndStatus}' for contact ${contact.id} — leaving phone_reassigned unset, flagging composite risk for manual review`);
     }
   }
 
-  props.dnc_composite_risk = (dncOptOut === true || litigatorFlag === true || reassignedFlag === true) ? 'Yes' : 'No';
+  // An unmapped RNDStatus is an unknown reassignment signal, not a clean one — treat as risky
+  // rather than letting it silently fall through as "not reassigned".
+  props.dnc_composite_risk = (dncOptOut === true || litigatorFlag === true || reassignedFlag === true || reassignedUnknown) ? 'Yes' : 'No';
   return props;
 }
 
@@ -392,12 +398,13 @@ async function main() {
     ? `🟢 DNC scrub start — LIST MODE, listId=${LIST_ID}`
     : `🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
 
-  const candidates = TEST_CONTACT_ID
+  let candidates = TEST_CONTACT_ID
     ? await fetchSingleContact(TEST_CONTACT_ID)
     : LIST_ID
     ? await fetchListCandidates(LIST_ID)
     : await fetchCandidates();
-  console.log(`[Main] total candidates: ${candidates.length}`);
+  if (SAMPLE_LIMIT) candidates = candidates.slice(0, SAMPLE_LIMIT);
+  console.log(`[Main] total candidates: ${candidates.length}${SAMPLE_LIMIT ? ` (capped to SAMPLE_LIMIT=${SAMPLE_LIMIT})` : ''}`);
   if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
 
   console.log(`[Deals] looking up associated deals for ${candidates.length} contacts`);
@@ -434,6 +441,23 @@ async function main() {
     id: c.id,
     properties: deriveProps(c, resultsByPhone, todayIso),
   }));
+
+  if (DRY_RUN) {
+    console.log(`🧪 DRY RUN — no HubSpot writes will be made. Detailed results for ${inputs.length} contact(s):`);
+    for (const c of contacts) {
+      const result = resultsByPhone.get(c.cleanPhone) || null;
+      const derived = inputs.find((i) => i.id === c.id).properties;
+      console.log('----------------------------------------');
+      console.log(`Contact ${c.id}`);
+      console.log(`  phone (cleaned): ${c.cleanPhone || 'MISSING/INVALID'}`);
+      console.log(`  consentDate used for LastEBRDate/LastRNDDate: ${c.consentDate ? c.consentDate.toISOString().slice(0, 10) : 'none'}`);
+      console.log(`  isInstallCompleted: ${c.isInstallCompleted}`);
+      console.log(`  QuickCheck raw result: ${result ? JSON.stringify(result) : 'none (no phone / RETRY / not sent)'}`);
+      console.log(`  Derived properties: ${JSON.stringify(derived)}`);
+    }
+    console.log(`🧪 DRY RUN complete — ${inputs.length} contact(s) checked, 0 HubSpot properties written.`);
+    return;
+  }
 
   const { updated, failed } = await batchUpdate(inputs);
   console.log(`✅ Bulk DNC scrub done — updated=${updated} failed=${failed}`);

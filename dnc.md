@@ -200,9 +200,9 @@ exports.main = async (event, callback) => {
     const isInstallCompleted = String(statusCodeRaw || '').trim().toLowerCase() === 'install completed';
 
     // Inputs used for rules
-    const rawLatestDealCreated = input.latest_deal_created_date;
-    const rawContactCreated    = input.createdate;
-    const rawLastContact       = input.recent_deal_close_date;
+    const rawLatestDealCreated  = input.latest_deal_created_date;
+    const rawContactCreated     = input.createdate;
+    const rawRecentDealClose    = input.recent_deal_close_date;
     const pewcRaw              = input.pewc__c;
     const isPewc = pewcRaw === true || String(pewcRaw).trim().toLowerCase() === 'true';
 
@@ -218,7 +218,7 @@ exports.main = async (event, callback) => {
       // fall back to older signals only if install_completed_date__c is missing.
       const consentDate =
         hsToDate(rawInstallCompleted) ||
-        hsToDate(rawLastContact) ||
+        hsToDate(rawRecentDealClose) ||
         hsToDate(rawLatestDealCreated) ||
         hsToDate(rawContactCreated);
       const consentDateSlash = consentDate ? toMMDDYYYYSlash(consentDate) : null;
@@ -271,18 +271,22 @@ exports.main = async (event, callback) => {
 
           // --- Reassignment ---
           let reassignedFlag = null;
+          let reassignedUnknown = false;
           const rndStatus = result.RNDStatus;
           if (rndStatus != null) {
             if (Object.prototype.hasOwnProperty.call(RND_STATUS_MAP, rndStatus)) {
               reassignedFlag = RND_STATUS_MAP[rndStatus];
               updateProps.phone_reassigned = reassignedFlag ? 'Yes' : 'No';
             } else {
-              console.warn(`[Reassigned] Unmapped RNDStatus='${rndStatus}' — leaving phone_reassigned unset`);
+              reassignedUnknown = true;
+              console.warn(`[Reassigned] Unmapped RNDStatus='${rndStatus}' — leaving phone_reassigned unset, flagging composite risk for manual review`);
             }
           }
 
           // --- Composite risk rollup ---
-          updateProps.dnc_composite_risk = (dncOptOut === true || litigatorFlag === true || reassignedFlag === true) ? 'Yes' : 'No';
+          // An unmapped RNDStatus is an unknown reassignment signal, not a clean one — treat as
+          // risky rather than letting it silently fall through as "not reassigned".
+          updateProps.dnc_composite_risk = (dncOptOut === true || litigatorFlag === true || reassignedFlag === true || reassignedUnknown) ? 'Yes' : 'No';
         } else {
           updateProps.dnc_api_log = 'RETRY';
         }
