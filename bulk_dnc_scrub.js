@@ -388,31 +388,21 @@ async function batchUpdate(inputs) {
   return { updated, failed };
 }
 
-// ---------- main ----------
-async function main() {
-  if (!HUBSPOT_TOKEN) throw new Error('Missing env HUBSPOT_PRIVATE_APP_TOKEN');
-  if (!HAS_DNC_CREDS) console.warn('⚠️ Missing DNC_OAUTH_CLIENT_ID/SECRET/SCOPE; DNC/EBR/litigator/reassignment checks will be skipped for this run.');
+const PROCESS_CHUNK_SIZE = Number(process.env.PROCESS_CHUNK_SIZE || 2000);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
-  console.log(TEST_CONTACT_ID
-    ? `🟢 DNC scrub start — TEST MODE, single contact ${TEST_CONTACT_ID}`
-    : LIST_ID
-    ? `🟢 DNC scrub start — LIST MODE, listId=${LIST_ID}`
-    : `🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
+/** Was this contact already scrubbed today? Used to make LIST MODE reruns resumable —
+ *  a timed-out run's earlier chunks are already written, so a plain retrigger skips them
+ *  instead of redoing the whole list from the start. */
+function scrubbedToday(properties, todayIso) {
+  const d = hsToDate(properties.dnc_scrubbed_on__c);
+  return d ? d.toISOString().slice(0, 10) === todayIso : false;
+}
 
-  let candidates = TEST_CONTACT_ID
-    ? await fetchSingleContact(TEST_CONTACT_ID)
-    : LIST_ID
-    ? await fetchListCandidates(LIST_ID)
-    : await fetchCandidates();
-  if (SAMPLE_LIMIT) candidates = candidates.slice(0, SAMPLE_LIMIT);
-  console.log(`[Main] total candidates: ${candidates.length}${SAMPLE_LIMIT ? ` (capped to SAMPLE_LIMIT=${SAMPLE_LIMIT})` : ''}`);
-  if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
-
-  console.log(`[Deals] looking up associated deals for ${candidates.length} contacts`);
+/** Run the full deal-lookup + QuickCheck + derive + write pipeline for one chunk of contacts.
+ *  Writes to HubSpot immediately so progress survives a job timeout on a later chunk. */
+async function processChunk(candidates, todayIso) {
   const assocMap = await fetchAssociatedDealIdsBulk(candidates.map((c) => c.id));
   const dealPropsMap = await fetchDealsBulk([...assocMap.values()].flat());
-  console.log(`[Deals] resolved ${dealPropsMap.size} unique deal(s)`);
 
   const contacts = candidates.map((c) => {
     const cleanPhone = cleanPhoneOf(c.properties.phone, c.properties.mobilephone);
@@ -432,7 +422,7 @@ async function main() {
 
   const withPhone = contacts.filter((c) => c.cleanPhone);
   const withoutPhone = contacts.filter((c) => !c.cleanPhone);
-  console.log(`[Main] withPhone=${withPhone.length} withoutPhone=${withoutPhone.length}`);
+  console.log(`[Chunk] withPhone=${withPhone.length} withoutPhone=${withoutPhone.length}`);
 
   let resultsByPhone = new Map();
   if (HAS_DNC_CREDS && withPhone.length > 0) {
@@ -457,13 +447,60 @@ async function main() {
       console.log(`  QuickCheck raw result: ${result ? JSON.stringify(result) : 'none (no phone / RETRY / not sent)'}`);
       console.log(`  Derived properties: ${JSON.stringify(derived)}`);
     }
-    console.log(`🧪 DRY RUN complete — ${inputs.length} contact(s) checked, 0 HubSpot properties written.`);
-    return;
+    return { updated: 0, failed: 0, checked: inputs.length };
   }
 
   const { updated, failed } = await batchUpdate(inputs);
-  console.log(`✅ Bulk DNC scrub done — updated=${updated} failed=${failed}`);
-  if (failed > 0) process.exitCode = 1;
+  return { updated, failed, checked: inputs.length };
+}
+
+// ---------- main ----------
+async function main() {
+  if (!HUBSPOT_TOKEN) throw new Error('Missing env HUBSPOT_PRIVATE_APP_TOKEN');
+  if (!HAS_DNC_CREDS) console.warn('⚠️ Missing DNC_OAUTH_CLIENT_ID/SECRET/SCOPE; DNC/EBR/litigator/reassignment checks will be skipped for this run.');
+
+  const todayIso = new Date().toISOString().slice(0, 10);
+  console.log(TEST_CONTACT_ID
+    ? `🟢 DNC scrub start — TEST MODE, single contact ${TEST_CONTACT_ID}`
+    : LIST_ID
+    ? `🟢 DNC scrub start — LIST MODE, listId=${LIST_ID}`
+    : `🟢 Bulk DNC scrub start — dailyLimit=${DAILY_LIMIT} staleDays=${STALE_DAYS}`);
+
+  let candidates = TEST_CONTACT_ID
+    ? await fetchSingleContact(TEST_CONTACT_ID)
+    : LIST_ID
+    ? await fetchListCandidates(LIST_ID)
+    : await fetchCandidates();
+
+  if (LIST_ID) {
+    // Makes a plain retrigger resumable: a prior run's completed chunks are already
+    // stamped with today's date, so they're skipped instead of reprocessed from scratch.
+    const before = candidates.length;
+    candidates = candidates.filter((c) => !scrubbedToday(c.properties, todayIso));
+    console.log(`[List] skipping ${before - candidates.length} already scrubbed today; ${candidates.length} remaining`);
+  }
+
+  if (SAMPLE_LIMIT) candidates = candidates.slice(0, SAMPLE_LIMIT);
+  console.log(`[Main] total candidates: ${candidates.length}${SAMPLE_LIMIT ? ` (capped to SAMPLE_LIMIT=${SAMPLE_LIMIT})` : ''}`);
+  if (candidates.length === 0) { console.log('Nothing to scrub today.'); return; }
+
+  const chunks = chunkArray(candidates, PROCESS_CHUNK_SIZE);
+  console.log(`[Main] processing ${candidates.length} candidate(s) in ${chunks.length} chunk(s) of up to ${PROCESS_CHUNK_SIZE}`);
+
+  let totalUpdated = 0, totalFailed = 0, totalChecked = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`[Main] === chunk ${i + 1}/${chunks.length} (${chunks[i].length} contacts) ===`);
+    const { updated, failed, checked } = await processChunk(chunks[i], todayIso);
+    totalUpdated += updated;
+    totalFailed += failed;
+    totalChecked += checked;
+    console.log(`[Main] chunk ${i + 1}/${chunks.length} done — updated=${updated} failed=${failed}`);
+  }
+
+  console.log(DRY_RUN
+    ? `🧪 DRY RUN complete — ${totalChecked} contact(s) checked, 0 HubSpot properties written.`
+    : `✅ Bulk DNC scrub done — updated=${totalUpdated} failed=${totalFailed}`);
+  if (totalFailed > 0) process.exitCode = 1;
 }
 
 main().catch((err) => {
