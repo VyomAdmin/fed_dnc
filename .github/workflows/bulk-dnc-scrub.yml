@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      force_reprocess:
+        description: 'Re-check every list member even if already scrubbed today (use after a logic change)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   scrub:
@@ -42,4 +47,5 @@ jobs:
           HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
           SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
         run: node bulk_dnc_scrub.js

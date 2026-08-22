@@ -253,10 +253,9 @@ exports.main = async (event, callback) => {
           updateProps.litigator = litigatorFlag ? 'Yes' : 'No';
 
           // --- DNC/EBR ---
-          // A litigator-only match also sets Status="DNC", so exclude litigator filters when
-          // deciding dnc_opt_out — otherwise litigator hits would wrongly flip opt-out too.
-          const nonLitigatorHit = filters.some((f) => !/litigator/i.test(f.FilterName || ''));
-          const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC' && nonLitigatorHit;
+          // Trust the API's Status field literally — dnc_opt_out=Yes only when the API itself
+          // reports Status="DNC", no other overrides.
+          const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC';
           updateProps.dnc_opt_out = dncOptOut;
 
           if (dncOptOut) {

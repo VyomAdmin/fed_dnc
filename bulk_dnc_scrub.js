@@ -13,6 +13,7 @@ const TEST_CONTACT_ID = process.env.TEST_CONTACT_ID || null;
 const LIST_ID = process.env.HUBSPOT_LIST_ID || null;
 const DRY_RUN = String(process.env.DRY_RUN || '').trim().toLowerCase() === 'true';
 const SAMPLE_LIMIT = Number(process.env.SAMPLE_LIMIT || 0) || null;
+const FORCE_REPROCESS = String(process.env.FORCE_REPROCESS || '').trim().toLowerCase() === 'true';
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -339,10 +340,9 @@ function deriveProps(contact, resultsByPhone, todayIso) {
   props.litigator = litigatorFlag ? 'Yes' : 'No';
 
   // --- DNC/EBR ---
-  // A litigator-only match also sets Status="DNC"; exclude litigator filters so those
-  // don't wrongly flip dnc_opt_out.
-  const nonLitigatorHit = filters.some((f) => !/litigator/i.test(f.FilterName || ''));
-  const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC' && nonLitigatorHit;
+  // Trust the API's Status field literally — dnc_opt_out=Yes only when the API itself
+  // reports Status="DNC", no other overrides.
+  const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC';
   props.dnc_opt_out = dncOptOut;
 
   if (dncOptOut) {
@@ -472,12 +472,14 @@ async function main() {
     ? await fetchListCandidates(LIST_ID)
     : await fetchCandidates();
 
-  if (LIST_ID) {
+  if (LIST_ID && !FORCE_REPROCESS) {
     // Makes a plain retrigger resumable: a prior run's completed chunks are already
     // stamped with today's date, so they're skipped instead of reprocessed from scratch.
     const before = candidates.length;
     candidates = candidates.filter((c) => !scrubbedToday(c.properties, todayIso));
     console.log(`[List] skipping ${before - candidates.length} already scrubbed today; ${candidates.length} remaining`);
+  } else if (LIST_ID && FORCE_REPROCESS) {
+    console.log(`[List] FORCE_REPROCESS=true — re-checking all ${candidates.length} list member(s) regardless of today's scrub status`);
   }
 
   if (SAMPLE_LIMIT) candidates = candidates.slice(0, SAMPLE_LIMIT);
