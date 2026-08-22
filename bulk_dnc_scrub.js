@@ -322,12 +322,12 @@ function deriveProps(contact, resultsByPhone, todayIso) {
   // dnc_scrubbed_on__c must only be stamped once a check actually happened (or there's
   // nothing to check). Stamping it on RETRY/SKIPPED_NO_OAUTH_CREDS would hide the failure
   // and skip this contact from re-scrub for STALE_DAYS while it was never really checked.
-  if (!contact.cleanPhone) return { dnc_scrubbed_on__c: todayIso, dnc_api_log: 'NO_PHONE' };
+  if (!contact.cleanPhone) return { dnc_scrubbed_on__c: todayIso, dnc_api_log: 'NO_PHONE', dnc_opt_out: '' };
 
-  if (!HAS_DNC_CREDS) return { dnc_api_log: 'SKIPPED_NO_OAUTH_CREDS' };
+  if (!HAS_DNC_CREDS) return { dnc_api_log: 'SKIPPED_NO_OAUTH_CREDS', dnc_opt_out: '' };
 
   const result = resultsByPhone.get(contact.cleanPhone);
-  if (!result) return { dnc_api_log: 'RETRY' };
+  if (!result) return { dnc_api_log: 'RETRY', dnc_opt_out: '' };
 
   const props = { dnc_scrubbed_on__c: todayIso };
   const pewcRaw = contact.properties.pewc__c;
@@ -341,9 +341,10 @@ function deriveProps(contact, resultsByPhone, todayIso) {
 
   // --- DNC/EBR ---
   // Trust the API's Status field literally — dnc_opt_out=Yes only when the API itself
-  // reports Status="DNC", no other overrides.
+  // reports Status="DNC". Otherwise clear the field (empty string) rather than writing
+  // "No", so a not-DNC result never gets confused with "checked and clean."
   const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC';
-  props.dnc_opt_out = dncOptOut;
+  props.dnc_opt_out = dncOptOut ? true : '';
 
   if (dncOptOut) {
     props.dnc_call_thru_date__c = todayIso;

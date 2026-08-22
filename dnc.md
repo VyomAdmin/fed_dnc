@@ -231,6 +231,7 @@ exports.main = async (event, callback) => {
 
       if (!token) {
         updateProps.dnc_api_log = 'OAUTH_TOKEN_FETCH_FAILED';
+        updateProps.dnc_opt_out = '';
       } else {
         const qcEntry = { PhoneNumber: cleanPhone };
         // LastRNDDate (reassignment check) applies regardless of install status — reassignment
@@ -254,9 +255,10 @@ exports.main = async (event, callback) => {
 
           // --- DNC/EBR ---
           // Trust the API's Status field literally — dnc_opt_out=Yes only when the API itself
-          // reports Status="DNC", no other overrides.
+          // reports Status="DNC". Otherwise clear the field (empty string) rather than writing
+          // "No", so a not-DNC result never gets confused with "checked and clean."
           const dncOptOut = String(result.Status || '').trim().toUpperCase() === 'DNC';
-          updateProps.dnc_opt_out = dncOptOut;
+          updateProps.dnc_opt_out = dncOptOut ? true : '';
 
           if (dncOptOut) {
             updateProps.dnc_call_thru_date__c = todayIso;
@@ -291,10 +293,15 @@ exports.main = async (event, callback) => {
           updateProps.dnc_composite_risk = (dncOptOut === true || litigatorFlag === true || reassignedFlag === true || reassignedUnknown) ? 'Yes' : 'No';
         } else {
           updateProps.dnc_api_log = 'RETRY';
+          updateProps.dnc_opt_out = '';
         }
       }
     } else if (cleanPhone && !hasDncCreds) {
       updateProps.dnc_api_log = 'SKIPPED_NO_OAUTH_CREDS';
+      updateProps.dnc_opt_out = '';
+    } else if (!cleanPhone) {
+      updateProps.dnc_api_log = 'NO_PHONE';
+      updateProps.dnc_opt_out = '';
     }
 
     console.log('[HubSpot] Prepared properties:', updateProps);
