@@ -27,6 +27,15 @@ on:
         required: false
         type: boolean
         default: false
+      ebr_override_leadsource:
+        description: 'TEST ONLY: skip the install-completed gate for LastEBRDate when leadsource exactly matches this value (leave blank for normal behavior)'
+        required: false
+        type: string
+      only_dnc_true:
+        description: 'List mode only: restrict processing to contacts currently marked dnc_opt_out=Yes'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   scrub:
@@ -48,4 +57,6 @@ jobs:
           SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
+          EBR_OVERRIDE_LEADSOURCE: ${{ github.event.inputs.ebr_override_leadsource }}
+          ONLY_DNC_TRUE: ${{ github.event.inputs.only_dnc_true }}
         run: node bulk_dnc_scrub.js

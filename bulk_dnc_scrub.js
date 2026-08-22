@@ -14,6 +14,8 @@ const LIST_ID = process.env.HUBSPOT_LIST_ID || null;
 const DRY_RUN = String(process.env.DRY_RUN || '').trim().toLowerCase() === 'true';
 const SAMPLE_LIMIT = Number(process.env.SAMPLE_LIMIT || 0) || null;
 const FORCE_REPROCESS = String(process.env.FORCE_REPROCESS || '').trim().toLowerCase() === 'true';
+const EBR_OVERRIDE_LEADSOURCE = process.env.EBR_OVERRIDE_LEADSOURCE || null; // test-only: skip the isInstallCompleted gate for this exact leadsource
+const ONLY_DNC_TRUE = String(process.env.ONLY_DNC_TRUE || '').trim().toLowerCase() === 'true'; // list mode: only reprocess contacts currently marked dnc_opt_out=Yes
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -30,6 +32,7 @@ const QUICKCHECK_CHUNK_SIZE = 500; // v4 QuickCheck POST max per call
 const CONTACT_PROPERTIES = [
   'phone', 'mobilephone', 'dnc_scrubbed_on__c',
   'pewc__c', 'createdate', 'latest_deal_created_date', 'recent_deal_close_date',
+  'leadsource', 'dnc_opt_out',
 ];
 
 // install_completed_date__c / status_code__c live on the Deal, not the Contact
@@ -417,7 +420,11 @@ async function processChunk(candidates, todayIso) {
       hsToDate(c.properties.recent_deal_close_date) ||
       hsToDate(c.properties.latest_deal_created_date) ||
       hsToDate(c.properties.createdate);
-    const isInstallCompleted = String(dealStatusCode || '').trim().toLowerCase() === 'install completed';
+    const statusIsInstallCompleted = String(dealStatusCode || '').trim().toLowerCase() === 'install completed';
+    // Test-only override: for a specific leadsource, send LastEBRDate regardless of
+    // install status (normally gated on statusIsInstallCompleted alone).
+    const ebrOverride = Boolean(EBR_OVERRIDE_LEADSOURCE) && String(c.properties.leadsource || '').trim() === EBR_OVERRIDE_LEADSOURCE;
+    const isInstallCompleted = statusIsInstallCompleted || ebrOverride;
     return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate };
   });
 
@@ -472,6 +479,12 @@ async function main() {
     : LIST_ID
     ? await fetchListCandidates(LIST_ID)
     : await fetchCandidates();
+
+  if (LIST_ID && ONLY_DNC_TRUE) {
+    const before = candidates.length;
+    candidates = candidates.filter((c) => String(c.properties.dnc_opt_out).trim().toLowerCase() === 'true');
+    console.log(`[List] ONLY_DNC_TRUE=true — filtering to ${candidates.length}/${before} contact(s) currently marked dnc_opt_out=Yes`);
+  }
 
   if (LIST_ID && !FORCE_REPROCESS) {
     // Makes a plain retrigger resumable: a prior run's completed chunks are already
