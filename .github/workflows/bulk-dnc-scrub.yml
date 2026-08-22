@@ -36,6 +36,10 @@ on:
         required: false
         type: boolean
         default: false
+      raw_check_leadsource:
+        description: 'TEST ONLY: for this exact leadsource, send QuickCheck bare PhoneNumber only (no dates/consent logic) and set dnc_opt_out purely from Status/litigator (leave blank for normal behavior)'
+        required: false
+        type: string
 
 jobs:
   scrub:
@@ -59,4 +63,5 @@ jobs:
           FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
           EBR_OVERRIDE_LEADSOURCE: ${{ github.event.inputs.ebr_override_leadsource }}
           ONLY_DNC_TRUE: ${{ github.event.inputs.only_dnc_true }}
+          RAW_CHECK_LEADSOURCE: ${{ github.event.inputs.raw_check_leadsource }}
         run: node bulk_dnc_scrub.js

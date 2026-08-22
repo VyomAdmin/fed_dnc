@@ -16,6 +16,10 @@ const SAMPLE_LIMIT = Number(process.env.SAMPLE_LIMIT || 0) || null;
 const FORCE_REPROCESS = String(process.env.FORCE_REPROCESS || '').trim().toLowerCase() === 'true';
 const EBR_OVERRIDE_LEADSOURCE = process.env.EBR_OVERRIDE_LEADSOURCE || null; // test-only: skip the isInstallCompleted gate for this exact leadsource
 const ONLY_DNC_TRUE = String(process.env.ONLY_DNC_TRUE || '').trim().toLowerCase() === 'true'; // list mode: only reprocess contacts currently marked dnc_opt_out=Yes
+// test-only: for this exact leadsource, send QuickCheck bare PhoneNumber only (no
+// LastRNDDate/LastEBRDate, no consent/install logic) and derive dnc_opt_out purely from
+// the API's own Status/litigator signal, skipping every other internal condition.
+const RAW_CHECK_LEADSOURCE = process.env.RAW_CHECK_LEADSOURCE || null;
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -294,6 +298,7 @@ async function runQuickCheckChunks(contacts) {
 
     const body = chunk.map((c) => {
       const entry = { PhoneNumber: c.cleanPhone };
+      if (c.rawCheck) return entry; // test-only: bare PhoneNumber, no dates at all
       // LastRNDDate (reassignment check) applies regardless of install status — reassignment
       // risk exists whether or not the deal has closed. LastEBRDate (EBR exemption) stays
       // gated on isInstallCompleted since that exemption legitimately requires it.
@@ -331,6 +336,19 @@ function deriveProps(contact, resultsByPhone, todayIso) {
 
   const result = resultsByPhone.get(contact.cleanPhone);
   if (!result) return { dnc_api_log: 'RETRY', dnc_opt_out: '' };
+
+  // Test-only: skip every internal condition (pewc/install/consent/EBR/reassignment) —
+  // just trust the API's own Status/litigator signal directly.
+  if (contact.rawCheck) {
+    const rawFilters = Array.isArray(result.Filters) ? result.Filters : [];
+    const rawLitigator = rawFilters.some((f) => /litigator/i.test(f.FilterName || ''));
+    const rawStatusDnc = String(result.Status || '').trim().toUpperCase() === 'DNC';
+    return {
+      dnc_scrubbed_on__c: todayIso,
+      litigator: rawLitigator ? 'Yes' : 'No',
+      dnc_opt_out: (rawStatusDnc || rawLitigator) ? true : '',
+    };
+  }
 
   const props = { dnc_scrubbed_on__c: todayIso };
   const pewcRaw = contact.properties.pewc__c;
@@ -425,7 +443,10 @@ async function processChunk(candidates, todayIso) {
     // install status (normally gated on statusIsInstallCompleted alone).
     const ebrOverride = Boolean(EBR_OVERRIDE_LEADSOURCE) && String(c.properties.leadsource || '').trim() === EBR_OVERRIDE_LEADSOURCE;
     const isInstallCompleted = statusIsInstallCompleted || ebrOverride;
-    return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate };
+    // Test-only: for this leadsource, QuickCheck gets called with bare PhoneNumber only —
+    // no dates, no consent/install logic feeds the request or the derived decision.
+    const rawCheck = Boolean(RAW_CHECK_LEADSOURCE) && String(c.properties.leadsource || '').trim() === RAW_CHECK_LEADSOURCE;
+    return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate, rawCheck };
   });
 
   const withPhone = contacts.filter((c) => c.cleanPhone);
