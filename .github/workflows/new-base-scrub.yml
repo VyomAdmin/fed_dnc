@@ -1,0 +1,49 @@
+name: New Base Scrub
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_contact_id:
+        description: 'HubSpot contact ID to scrub in isolation (leave blank for list mode)'
+        required: false
+        type: string
+      list_id:
+        description: 'HubSpot active list ID to scrub (leave blank for single-contact test mode)'
+        required: false
+        type: string
+      sample_limit:
+        description: 'Cap the number of candidates processed (e.g. 10 for a sample check)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Print detailed per-contact results without writing anything to HubSpot'
+        required: false
+        type: boolean
+        default: false
+      force_reprocess:
+        description: 'Re-check every list member even if already scrubbed today'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  scrub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run new base scrub
+        env:
+          HUBSPOT_PRIVATE_APP_TOKEN: ${{ secrets.HUBSPOT_PRIVATE_APP_TOKEN }}
+          DNC_OAUTH_CLIENT_ID: ${{ secrets.DNC_OAUTH_CLIENT_ID }}
+          DNC_OAUTH_CLIENT_SECRET: ${{ secrets.DNC_OAUTH_CLIENT_SECRET }}
+          DNC_OAUTH_SCOPE: ${{ secrets.DNC_OAUTH_SCOPE }}
+          TEST_CONTACT_ID: ${{ github.event.inputs.test_contact_id }}
+          HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
+          SAMPLE_LIMIT: ${{ github.event.inputs.sample_limit }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
+        run: node new_base_scrub.js
