@@ -40,6 +40,11 @@ on:
         description: 'TEST ONLY: for this exact leadsource, send QuickCheck bare PhoneNumber only (no dates/consent logic) and set dnc_opt_out purely from Status/litigator (leave blank for normal behavior)'
         required: false
         type: string
+      san_aware_mode:
+        description: 'Skip the API call for out-of-SAN area codes (log OUT_OF_SAN, blank dnc_opt_out); for in-SAN numbers, send LastEBRDate=createdate and check purely for DNC/litigator'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   scrub:
@@ -64,4 +69,5 @@ jobs:
           EBR_OVERRIDE_LEADSOURCE: ${{ github.event.inputs.ebr_override_leadsource }}
           ONLY_DNC_TRUE: ${{ github.event.inputs.only_dnc_true }}
           RAW_CHECK_LEADSOURCE: ${{ github.event.inputs.raw_check_leadsource }}
+          SAN_AWARE_MODE: ${{ github.event.inputs.san_aware_mode }}
         run: node bulk_dnc_scrub.js

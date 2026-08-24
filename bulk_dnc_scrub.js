@@ -20,6 +20,17 @@ const ONLY_DNC_TRUE = String(process.env.ONLY_DNC_TRUE || '').trim().toLowerCase
 // LastRNDDate/LastEBRDate, no consent/install logic) and derive dnc_opt_out purely from
 // the API's own Status/litigator signal, skipping every other internal condition.
 const RAW_CHECK_LEADSOURCE = process.env.RAW_CHECK_LEADSOURCE || null;
+// SAN-aware mode: skip the DNC API call entirely for out-of-SAN area codes (log OUT_OF_SAN,
+// blank dnc_opt_out — no check happened). For in-SAN numbers, send LastEBRDate=createdate
+// and derive dnc_opt_out purely from Status/litigator, skipping pewc/install/consent logic.
+const SAN_AWARE_MODE = String(process.env.SAN_AWARE_MODE || '').trim().toLowerCase() === 'true';
+// Area codes actually covered by our current DNC Solutions SAN (confirmed with vendor support, 2026-08).
+const SAN_AREA_CODES = new Set([
+  '239', '305', '321', '324', '352', '386', '407', '448', '480', '520',
+  '561', '602', '623', '645', '656', '689', '727', '728', '754', '772',
+  '786', '803', '813', '821', '839', '843', '850', '854', '863', '864',
+  '904', '928', '941', '954',
+]);
 
 const HS_SEARCH_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/search';
 const HS_BATCH_UPDATE_URL = 'https://api.hubapi.com/crm/v3/objects/contacts/batch/update';
@@ -298,6 +309,12 @@ async function runQuickCheckChunks(contacts) {
 
     const body = chunk.map((c) => {
       const entry = { PhoneNumber: c.cleanPhone };
+      if (SAN_AWARE_MODE && c.inSan === true) {
+        // SAN-aware mode: in-SAN numbers get EBR evaluated against the contact's real
+        // createdate (not a fabricated date), independent of install/consent logic.
+        if (c.createDate) entry.LastEBRDate = toMMDDYYYYSlash(c.createDate);
+        return entry;
+      }
       if (c.rawCheck) return entry; // test-only: bare PhoneNumber, no dates at all
       // LastRNDDate (reassignment check) applies regardless of install status — reassignment
       // risk exists whether or not the deal has closed. LastEBRDate (EBR exemption) stays
@@ -332,10 +349,29 @@ function deriveProps(contact, resultsByPhone, todayIso) {
   // and skip this contact from re-scrub for STALE_DAYS while it was never really checked.
   if (!contact.cleanPhone) return { dnc_scrubbed_on__c: todayIso, dnc_api_log: 'NO_PHONE', dnc_opt_out: '' };
 
+  // SAN-aware mode: out-of-SAN numbers never got an API call — no check happened, so log
+  // it plainly rather than guessing at a DNC status we don't have.
+  if (SAN_AWARE_MODE && contact.inSan === false) {
+    return { dnc_scrubbed_on__c: todayIso, dnc_api_log: 'OUT_OF_SAN', dnc_opt_out: '' };
+  }
+
   if (!HAS_DNC_CREDS) return { dnc_api_log: 'SKIPPED_NO_OAUTH_CREDS', dnc_opt_out: '' };
 
   const result = resultsByPhone.get(contact.cleanPhone);
   if (!result) return { dnc_api_log: 'RETRY', dnc_opt_out: '' };
+
+  // SAN-aware mode: in-SAN numbers were checked with LastEBRDate=createdate — derive
+  // purely from Status/litigator, skipping pewc/install/consent/reassignment logic.
+  if (SAN_AWARE_MODE && contact.inSan === true) {
+    const sanFilters = Array.isArray(result.Filters) ? result.Filters : [];
+    const sanLitigator = sanFilters.some((f) => /litigator/i.test(f.FilterName || ''));
+    const sanStatusDnc = String(result.Status || '').trim().toUpperCase() === 'DNC';
+    return {
+      dnc_scrubbed_on__c: todayIso,
+      litigator: sanLitigator ? 'Yes' : 'No',
+      dnc_opt_out: (sanStatusDnc || sanLitigator) ? true : '',
+    };
+  }
 
   // Test-only: skip every internal condition (pewc/install/consent/EBR/reassignment) —
   // just trust the API's own Status/litigator signal directly.
@@ -446,12 +482,17 @@ async function processChunk(candidates, todayIso) {
     // Test-only: for this leadsource, QuickCheck gets called with bare PhoneNumber only —
     // no dates, no consent/install logic feeds the request or the derived decision.
     const rawCheck = Boolean(RAW_CHECK_LEADSOURCE) && String(c.properties.leadsource || '').trim() === RAW_CHECK_LEADSOURCE;
-    return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate, rawCheck };
+    // SAN-aware mode: does this phone's area code fall within our current SAN coverage?
+    const inSan = cleanPhone ? SAN_AREA_CODES.has(cleanPhone.slice(0, 3)) : null;
+    const createDate = hsToDate(c.properties.createdate);
+    return { id: c.id, properties: c.properties, cleanPhone, consentDate, isInstallCompleted, dealInstallCompletedDate, rawCheck, inSan, createDate };
   });
 
-  const withPhone = contacts.filter((c) => c.cleanPhone);
-  const withoutPhone = contacts.filter((c) => !c.cleanPhone);
-  console.log(`[Chunk] withPhone=${withPhone.length} withoutPhone=${withoutPhone.length}`);
+  const outOfSan = SAN_AWARE_MODE ? contacts.filter((c) => c.cleanPhone && c.inSan === false) : [];
+  const checkable = SAN_AWARE_MODE ? contacts.filter((c) => !(c.cleanPhone && c.inSan === false)) : contacts;
+  const withPhone = checkable.filter((c) => c.cleanPhone);
+  const withoutPhone = checkable.filter((c) => !c.cleanPhone);
+  console.log(`[Chunk] withPhone=${withPhone.length} withoutPhone=${withoutPhone.length}${SAN_AWARE_MODE ? ` outOfSan=${outOfSan.length}` : ''}`);
 
   let resultsByPhone = new Map();
   if (HAS_DNC_CREDS && withPhone.length > 0) {
@@ -471,6 +512,7 @@ async function processChunk(candidates, todayIso) {
       console.log('----------------------------------------');
       console.log(`Contact ${c.id}`);
       console.log(`  phone (cleaned): ${c.cleanPhone || 'MISSING/INVALID'}`);
+      if (SAN_AWARE_MODE) console.log(`  inSan: ${c.inSan} (createDate used for LastEBRDate: ${c.createDate ? c.createDate.toISOString().slice(0, 10) : 'none'})`);
       console.log(`  consentDate used for LastEBRDate/LastRNDDate: ${c.consentDate ? c.consentDate.toISOString().slice(0, 10) : 'none'}`);
       console.log(`  isInstallCompleted: ${c.isInstallCompleted}`);
       console.log(`  QuickCheck raw result: ${result ? JSON.stringify(result) : 'none (no phone / RETRY / not sent)'}`);
