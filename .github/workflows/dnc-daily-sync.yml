@@ -1,0 +1,43 @@
+name: DNC Daily Sync
+
+on:
+  schedule:
+    - cron: '15 13 * * *' # 13:15 UTC = 9:15am EDT / 8:15am EST — after the registry's 8am ET post time year-round
+  workflow_dispatch:
+    inputs:
+      seed_area_codes:
+        description: 'Space-separated area codes to run a one-time Full List seed for (leave blank for normal daily Change List sync)'
+        required: false
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - name: Run daily Change List sync
+        if: ${{ github.event.inputs.seed_area_codes == '' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PGSSLROOTCERT: ${{ secrets.PGSSLROOTCERT_PATH }}
+          DNC_FULL_LIST_URL_TEMPLATE: ${{ secrets.DNC_FULL_LIST_URL_TEMPLATE }}
+          DNC_CHANGE_LIST_URL_TEMPLATE: ${{ secrets.DNC_CHANGE_LIST_URL_TEMPLATE }}
+          DNC_SAN: ${{ secrets.DNC_SAN }}
+          DNC_SAN_USERNAME: ${{ secrets.DNC_SAN_USERNAME }}
+          DNC_SAN_PASSWORD: ${{ secrets.DNC_SAN_PASSWORD }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: node scripts/daily_sync.js
+      - name: Run one-time Full List seed (manual dispatch only)
+        if: ${{ github.event.inputs.seed_area_codes != '' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DNC_FULL_LIST_URL_TEMPLATE: ${{ secrets.DNC_FULL_LIST_URL_TEMPLATE }}
+          DNC_SAN: ${{ secrets.DNC_SAN }}
+          DNC_SAN_USERNAME: ${{ secrets.DNC_SAN_USERNAME }}
+          DNC_SAN_PASSWORD: ${{ secrets.DNC_SAN_PASSWORD }}
+        run: node scripts/seed_full_list.js ${{ github.event.inputs.seed_area_codes }}

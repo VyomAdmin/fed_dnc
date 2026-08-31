@@ -1,0 +1,31 @@
+name: Area Code Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      list_id:
+        description: 'HubSpot active list ID to report on'
+        required: false
+        type: string
+        default: '1988'
+      coverage_target:
+        description: 'Coverage fraction (e.g. 0.9 for 90%)'
+        required: false
+        type: string
+        default: '0.9'
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run area code report
+        env:
+          HUBSPOT_PRIVATE_APP_TOKEN: ${{ secrets.HUBSPOT_PRIVATE_APP_TOKEN }}
+          HUBSPOT_LIST_ID: ${{ github.event.inputs.list_id }}
+          COVERAGE_TARGET: ${{ github.event.inputs.coverage_target }}
+        run: node area_code_report.js

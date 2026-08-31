@@ -5,6 +5,14 @@
     "node": ">=18"
   },
   "scripts": {
-    "bulk-scrub": "node bulk_dnc_scrub.js"
+    "bulk-scrub": "node bulk_dnc_scrub.js",
+    "dnc:migrate": "node scripts/migrate.js",
+    "dnc:seed": "node scripts/seed_full_list.js",
+    "dnc:sync": "node scripts/daily_sync.js",
+    "dnc:scrub": "node scripts/scrub_against_dnc.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
   }
 }
