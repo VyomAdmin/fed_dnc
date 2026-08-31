@@ -1,14 +1,14 @@
 'use strict';
 
 // Single Lambda, one EventBridge schedule: runs the full daily DNC pipeline
-// in sequence and posts a Slack summary at the end.
+// in sequence and posts a chat summary (Google Chat webhook) at the end.
 //
 //   1. daily_sync.js      — pull today's Change List diff from the registry,
 //                            upsert/delete in dnc_numbers.
 //   2. hubspot_dnc_writeback.js --since=today — match today's newly added
 //                            numbers against HubSpot contact phones, stamp
 //                            dnc_opt_out=true on matches only.
-//   3. Slack report       — "Diffs downloaded" (step 1 totals) and
+//   3. Chat report        — "Diffs downloaded" (step 1 totals) and
 //                            "DNC stamped in HubSpot" (step 2 totals),
 //                            posted to DNC_REPORT_WEBHOOK_URL (falls back to
 //                            ALERT_WEBHOOK_URL if unset).
@@ -19,7 +19,7 @@
 
 const { main: runDailySync } = require('../scripts/daily_sync');
 const { main: runWriteback } = require('../scripts/hubspot_dnc_writeback');
-const { postSlackMessage } = require('../lib/notify');
+const { postChatMessage } = require('../lib/notify');
 
 exports.handler = async () => {
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -54,7 +54,7 @@ exports.handler = async () => {
       : 'DNC stamped in HubSpot: not run'
   );
   if (error) lines.push(`⚠️ Error: ${error.message}`);
-  await postSlackMessage(webhook, lines.join('\n'));
+  await postChatMessage(webhook, lines.join('\n'));
 
   if (error) throw error;
   return { statusCode: 200, syncResult, writebackResult };

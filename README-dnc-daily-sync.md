@@ -20,7 +20,7 @@ of a live API call — with every run logged for safe-harbor documentation.
 | `scripts/daily_sync.js` | Day N Change List sync (cron target) |
 | `scripts/scrub_against_dnc.js` | monthly/campaign anti-join against a CSV of contacts |
 | `scripts/hubspot_dnc_writeback.js` | matches HubSpot list contacts against `dnc_numbers`, stamps `dnc_opt_out=true` on matches. Full check (no `--since`) once after seeding; `--since=YYYY-MM-DD` daily thereafter to check only that day's new numbers |
-| `lambda/dailyPipeline.js` | orchestrates daily_sync → hubspot_dnc_writeback (diff mode) → Slack summary report, for a single scheduled Lambda |
+| `lambda/dailyPipeline.js` | orchestrates daily_sync → hubspot_dnc_writeback (diff mode) → Google Chat summary report, for a single scheduled Lambda |
 | `.github/workflows/dnc-daily-sync.yml` | daily cron + manual seed dispatch |
 
 ## One thing you need to supply

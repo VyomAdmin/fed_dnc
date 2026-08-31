@@ -9,14 +9,14 @@ const { fetchChangeList } = require('../lib/registryClient');
 const { parseChangeListText } = require('../lib/parse');
 const { applyChangeList, writeSyncLog, findStaleAreaCodes } = require('../lib/syncEngine');
 const { SAN_AREA_CODES } = require('../lib/areaCodes');
-const { postSlackMessage } = require('../lib/notify');
+const { postChatMessage } = require('../lib/notify');
 
 const MAX_STALE_DAYS = Number(process.env.DNC_MAX_STALE_DAYS || 31);
 const RETRY_DELAY_MS = Number(process.env.DNC_RETRY_DELAY_MS || 5000);
 
 async function alert(message) {
   console.error(`🚨 ALERT: ${message}`);
-  await postSlackMessage(process.env.ALERT_WEBHOOK_URL, `DNC daily sync: ${message}`);
+  await postChatMessage(process.env.ALERT_WEBHOOK_URL, `DNC daily sync: ${message}`);
 }
 
 async function syncAreaCode(pool, areaCode, dateIso, attempt) {
