@@ -60,8 +60,10 @@ async function seedAreaCode(pool, areaCode) {
   return true;
 }
 
-async function main() {
-  const areaCodes = process.argv.slice(2).length ? process.argv.slice(2) : SAN_AREA_CODES;
+async function main(areaCodesArg) {
+  const areaCodes = (areaCodesArg && areaCodesArg.length)
+    ? areaCodesArg
+    : (process.argv.slice(2).length ? process.argv.slice(2) : SAN_AREA_CODES);
   console.log(`🟢 Seeding Full List for ${areaCodes.length} area code(s): ${areaCodes.join(', ')}`);
 
   const pool = getPool();
@@ -76,7 +78,11 @@ async function main() {
   if (failures > 0) process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error('❌ Fatal error in seed_full_list:', err);
-  process.exitCode = 1;
-});
+module.exports = { main };
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('❌ Fatal error in seed_full_list:', err);
+    process.exitCode = 1;
+  });
+}

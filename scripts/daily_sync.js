@@ -111,7 +111,11 @@ async function main() {
   if (failCount > 0 || stale.length > 0) process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error('❌ Fatal error in daily_sync:', err);
-  process.exitCode = 1;
-});
+module.exports = { main };
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('❌ Fatal error in daily_sync:', err);
+    process.exitCode = 1;
+  });
+}
