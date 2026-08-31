@@ -10,6 +10,8 @@
     "dnc:seed": "node scripts/seed_full_list.js",
     "dnc:sync": "node scripts/daily_sync.js",
     "dnc:scrub": "node scripts/scrub_against_dnc.js",
+    "dnc:writeback:full": "node scripts/hubspot_dnc_writeback.js",
+    "dnc:writeback:diff": "node scripts/hubspot_dnc_writeback.js --since=$(date +%F)",
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {

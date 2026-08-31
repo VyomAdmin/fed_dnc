@@ -7,17 +7,27 @@
 // Mirrors the dnc_opt_out convention from new_base_scrub.js — true when on
 // the registry, left untouched (never fabricated/blanked) otherwise.
 //
+// Two run modes, same script:
+//   - One-time full check (no --since): matches contacts against the entire
+//     dnc_numbers table. Run once, right after the initial seed_full_list.js.
+//   - Daily diff check (--since=YYYY-MM-DD, typically today): matches
+//     contacts only against numbers added to dnc_numbers on/after that date
+//     (dnc_numbers.added_at), i.e. just that day's Change List adds. Run
+//     once/day after daily_sync.js so this stays a cheap incremental check
+//     instead of a full re-scan.
+//
 // NOT wired to any schedule or trigger — invoke explicitly only.
 //
-// Usage: node scripts/hubspot_dnc_writeback.js [--list-id=1988] [--dry-run]
+// Usage: node scripts/hubspot_dnc_writeback.js [--list-id=1988] [--since=YYYY-MM-DD] [--dry-run]
 
 const { getPool } = require('../db/pool');
 const { fetchListMemberIds, batchReadContacts, batchUpdateContacts } = require('../lib/hubspotClient');
 
 function parseArgs(argv) {
-  const args = { listId: process.env.HUBSPOT_LIST_ID || '1988', dryRun: false };
+  const args = { listId: process.env.HUBSPOT_LIST_ID || '1988', sinceDate: null, dryRun: false };
   for (const a of argv) {
     if (a.startsWith('--list-id=')) args.listId = a.split('=')[1];
+    else if (a.startsWith('--since=')) args.sinceDate = a.split('=')[1];
     else if (a === '--dry-run') args.dryRun = true;
   }
   return args;
@@ -30,7 +40,7 @@ function cleanPhone(raw) {
   return p.length === 10 ? p : null;
 }
 
-async function findDncMatches(pool, contacts) {
+async function findDncMatches(pool, contacts, sinceDate) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -56,9 +66,13 @@ async function findDncMatches(pool, contacts) {
       );
     }
 
+    const dateFilter = sinceDate ? 'AND d.added_at >= $1' : '';
+    const params = sinceDate ? [sinceDate] : [];
     const res = await client.query(
       `SELECT wc.contact_id FROM writeback_candidates wc
-       JOIN dnc_numbers d ON d.area_code = wc.area_code AND d.number = wc.number`
+       JOIN dnc_numbers d ON d.area_code = wc.area_code AND d.number = wc.number
+       WHERE TRUE ${dateFilter}`,
+      params
     );
     await client.query('COMMIT');
     return new Set(res.rows.map((r) => r.contact_id));
@@ -70,13 +84,17 @@ async function findDncMatches(pool, contacts) {
   }
 }
 
-async function main({ listId, dryRun } = {}) {
+async function main({ listId, sinceDate, dryRun } = {}) {
   const args = parseArgs(process.argv.slice(2));
-  const opts = { listId: listId || args.listId, dryRun: dryRun ?? args.dryRun };
+  const opts = {
+    listId: listId || args.listId,
+    sinceDate: sinceDate !== undefined ? sinceDate : args.sinceDate,
+    dryRun: dryRun ?? args.dryRun,
+  };
   const token = process.env.HUBSPOT_PRIVATE_APP_TOKEN;
   if (!token) throw new Error('Missing env HUBSPOT_PRIVATE_APP_TOKEN');
 
-  console.log(`🟢 DNC write-back start — listId=${opts.listId} dryRun=${opts.dryRun}`);
+  console.log(`🟢 DNC write-back start — listId=${opts.listId} mode=${opts.sinceDate ? `diff since ${opts.sinceDate}` : 'full'} dryRun=${opts.dryRun}`);
 
   const memberIds = await fetchListMemberIds(token, opts.listId);
   console.log(`[List] total members: ${memberIds.length}`);
@@ -88,11 +106,11 @@ async function main({ listId, dryRun } = {}) {
   const pool = getPool();
   let matches;
   try {
-    matches = await findDncMatches(pool, contacts);
+    matches = await findDncMatches(pool, contacts, opts.sinceDate);
   } finally {
     await pool.end();
   }
-  console.log(`[Match] ${matches.size} contact(s) on National DNC`);
+  console.log(`[Match] ${matches.size} contact(s) on National DNC${opts.sinceDate ? ` (added since ${opts.sinceDate})` : ''}`);
 
   const toUpdate = contacts
     .filter((c) => matches.has(c.id) && c.properties.dnc_opt_out !== 'true')
