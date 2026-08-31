@@ -9,23 +9,14 @@ const { fetchChangeList } = require('../lib/registryClient');
 const { parseChangeListText } = require('../lib/parse');
 const { applyChangeList, writeSyncLog, findStaleAreaCodes } = require('../lib/syncEngine');
 const { SAN_AREA_CODES } = require('../lib/areaCodes');
+const { postSlackMessage } = require('../lib/notify');
 
 const MAX_STALE_DAYS = Number(process.env.DNC_MAX_STALE_DAYS || 31);
 const RETRY_DELAY_MS = Number(process.env.DNC_RETRY_DELAY_MS || 5000);
 
 async function alert(message) {
   console.error(`🚨 ALERT: ${message}`);
-  const webhook = process.env.ALERT_WEBHOOK_URL;
-  if (!webhook) return;
-  try {
-    await fetch(webhook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: `DNC daily sync: ${message}` }),
-    });
-  } catch (e) {
-    console.error(`[Alert] webhook post failed: ${e.message}`);
-  }
+  await postSlackMessage(process.env.ALERT_WEBHOOK_URL, `DNC daily sync: ${message}`);
 }
 
 async function syncAreaCode(pool, areaCode, dateIso, attempt) {
@@ -91,11 +82,18 @@ async function main() {
   const pool = getPool();
   let successCount = 0;
   let failCount = 0;
+  let totalAdded = 0;
+  let totalRemoved = 0;
 
   for (const areaCode of SAN_AREA_CODES) {
     const result = await syncAreaCodeWithRetry(pool, areaCode, dateIso);
-    if (result.ok) successCount++;
-    else failCount++;
+    if (result.ok) {
+      successCount++;
+      totalAdded += result.added;
+      totalRemoved += result.removed;
+    } else {
+      failCount++;
+    }
   }
 
   const stale = await findStaleAreaCodes(pool, SAN_AREA_CODES, MAX_STALE_DAYS);
@@ -107,8 +105,10 @@ async function main() {
 
   await pool.end();
 
-  console.log(`✅ Daily sync done — success=${successCount} failed=${failCount} stale=${stale.length}`);
+  console.log(`✅ Daily sync done — success=${successCount} failed=${failCount} stale=${stale.length} added=${totalAdded} removed=${totalRemoved}`);
   if (failCount > 0 || stale.length > 0) process.exitCode = 1;
+
+  return { dateIso, successCount, failCount, staleCount: stale.length, totalAdded, totalRemoved };
 }
 
 module.exports = { main };
